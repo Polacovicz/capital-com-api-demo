@@ -1,0 +1,9 @@
+flask
+requests
+gunicorn
+fastapi
+uvicorn
+pydantic
+websocket-client
+httpx
+pydantic
