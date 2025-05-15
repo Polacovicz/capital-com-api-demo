@@ -1,11 +1,10 @@
 from fastapi import FastAPI, Body, Query, HTTPException
 import httpx, asyncio
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 
 app = FastAPI(title="Capital.com API Proxy")
 
-# 🔹 Credenciais
 API_KEY = "Xkd7V5X79oXWjBjn"
 API_EMAIL = "juliocesarklamt@outlook.com"
 API_PASSWORD = "99156617aA**"
@@ -14,7 +13,17 @@ BASE_URL = "https://demo-api-capital.backend-capital.com/api/v1"
 SESSION_TOKEN: Optional[str] = None
 SECURITY_TOKEN: Optional[str] = None
 
-# 🔹 Models
+# 🔹 Models de Sessão e Conta
+class SessionRequest(BaseModel):
+    identifier: str
+    password: str
+    encryptedPassword: Optional[bool] = False
+
+class SwitchAccountRequest(BaseModel):
+    accountId: str
+
+# 🔹 Models de Posições, Ordens e Watchlists (idem previamente definidos)…
+
 class CreatePositionRequest(BaseModel):
     epic: str
     direction: str
@@ -68,10 +77,6 @@ class UpdateWorkingOrderRequest(BaseModel):
     profitDistance: Optional[float] = None
     profitAmount: Optional[float] = None
 
-class UpdateAccountPreferencesRequest(BaseModel):
-    leverages: Optional[Dict[str, int]] = None
-    hedgingMode: Optional[bool] = None
-
 class CreateWatchlistRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=20)
     epics: Optional[List[str]] = None
@@ -79,15 +84,7 @@ class CreateWatchlistRequest(BaseModel):
 class AddMarketToWatchlistRequest(BaseModel):
     epic: str
 
-class SessionRequest(BaseModel):
-    identifier: str
-    password: str
-    encryptedPassword: Optional[bool] = False
-
-class SwitchAccountRequest(BaseModel):
-    accountId: str
-
-# 🔹 Utilitários
+# 🔹 Utilitários de Sessão
 async def login():
     global SESSION_TOKEN, SECURITY_TOKEN
     async with httpx.AsyncClient() as client:
@@ -100,7 +97,7 @@ async def login():
         SESSION_TOKEN = r.headers.get("CST")
         SECURITY_TOKEN = r.headers.get("X-SECURITY-TOKEN")
     else:
-        raise RuntimeError(f"Login falhou: {r.text}")
+        raise RuntimeError(f"Falha no login: {r.text}")
 
 async def ensure_session():
     if SESSION_TOKEN is None:
@@ -120,7 +117,7 @@ async def make_request(method: str, endpoint: str, data=None, params=None):
     return r.json() if r.text else {}
 
 @app.on_event("startup")
-async def on_startup():
+async def startup():
     asyncio.create_task(login())
 
 # 🔹 Sessão
@@ -169,9 +166,12 @@ async def account_prefs():
     return await make_request("GET", "/accounts/preferences")
 
 @app.put("/proxy/account/preferences")
-async def update_account_prefs(prefs: UpdateAccountPreferencesRequest):
-    # garante que inclui leverages quando não for None
-    return await make_request("PUT", "/accounts/preferences", prefs.dict(exclude_none=True))
+async def update_account_prefs(payload: Dict[str, Any] = Body(...)):
+    """
+    Atualiza alavancagem e/ou hedging.
+    Recebe qualquer JSON com keys 'leverages' e/ou 'hedgingMode'.
+    """
+    return await make_request("PUT", "/accounts/preferences", data=payload)
 
 # 🔹 Histórico
 @app.get("/proxy/history/activity")
