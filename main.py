@@ -123,7 +123,7 @@ async def make_request(method: str, endpoint: str, data=None, params=None):
 async def on_startup():
     asyncio.create_task(login())
 
-# 🔹 Endpoints de Sessão
+# 🔹 Sessão
 @app.post("/proxy/login")
 async def proxy_login():
     await login()
@@ -159,7 +159,7 @@ async def session_logout():
     SESSION_TOKEN = SECURITY_TOKEN = None
     return {"message": "Sessão encerrada"}
 
-# 🔹 Endpoints de Conta
+# 🔹 Conta
 @app.get("/proxy/account")
 async def account_list():
     return await make_request("GET", "/accounts")
@@ -170,6 +170,7 @@ async def account_prefs():
 
 @app.put("/proxy/account/preferences")
 async def update_account_prefs(prefs: UpdateAccountPreferencesRequest):
+    # garante que inclui leverages quando não for None
     return await make_request("PUT", "/accounts/preferences", prefs.dict(exclude_none=True))
 
 # 🔹 Histórico
@@ -278,7 +279,7 @@ async def prices_historical(
 ):
     params = {"resolution": resolution, "max_entries": max_entries}
     if from_date: params["from"] = from_date
-    if to_date:   params["to"] = to_date
+    if to_date:   params["to"]   = to_date
     return await make_request("GET", f"/prices/{epic}", params=params)
 
 # 🔹 Sentimento
