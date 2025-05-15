@@ -245,17 +245,23 @@ async def order_delete(deal_id: str):
 
 # 🔹 Mercados
 @app.get("/proxy/markets")
-async def markets_list(searchTerm: Optional[str] = Query(None), epics: Optional[str] = Query(None)):
+async def markets_list(
+    searchTerm: Optional[str] = Query(None),
+    epics: Optional[str] = Query(None)
+):
     params = {"searchTerm": searchTerm} if searchTerm else {"epics": epics} if epics else {}
     return await make_request("GET", "/markets", params=params)
 
 @app.get("/proxy/markets/navigation")
 async def market_categories():
-    return await make_request("GET", "/marketnavigation")
+    return await make_request("GET", "/markets/navigation")
 
 @app.get("/proxy/markets/navigation/{node_id}")
-async def market_subnodes(node_id: str, limit: Optional[int] = Query(500, le=500)):
-    return await make_request("GET", f"/marketnavigation/{node_id}", params={"limit": limit})
+async def market_subnodes(
+    node_id: str,
+    limit: Optional[int] = Query(500, le=500)
+):
+    return await make_request("GET", f"/markets/navigation/{node_id}", params={"limit": limit})
 
 @app.get("/proxy/market/{epic}")
 async def market_get(epic: str):
@@ -266,19 +272,19 @@ async def market_get(epic: str):
 async def prices_historical(
     epic: str,
     resolution: Optional[str] = Query("MINUTE"),
-    max: Optional[int] = Query(10, alias="max", le=1000),
+    max_entries: Optional[int] = Query(10, alias="max_entries", le=1000),
     from_date: Optional[str] = Query(None, alias="from"),
     to_date: Optional[str] = Query(None, alias="to")
 ):
-    params = {"resolution": resolution, "max": max}
+    params = {"resolution": resolution, "max_entries": max_entries}
     if from_date: params["from"] = from_date
-    if to_date:   params["to"]   = to_date
+    if to_date:   params["to"] = to_date
     return await make_request("GET", f"/prices/{epic}", params=params)
 
 # 🔹 Sentimento
 @app.get("/proxy/sentiment/{market_id}")
 async def sentiment_get(market_id: str):
-    return await make_request("GET", f"/clientsentiment/{market_id}")
+    return await make_request("GET", f"/sentiment/{market_id}")
 
 # 🔹 Watchlists
 @app.get("/proxy/watchlists")
@@ -292,10 +298,6 @@ async def watchlist_create(req: CreateWatchlistRequest):
 @app.get("/proxy/watchlist/{watchlist_id}")
 async def watchlist_get(watchlist_id: str):
     return await make_request("GET", f"/watchlists/{watchlist_id}")
-
-@app.put("/proxy/watchlist/{watchlist_id}")
-async def watchlist_add(watchlist_id: str, req: AddMarketToWatchlistRequest):
-    return await make_request("PUT", f"/watchlists/{watchlist_id}", req.dict())
 
 @app.delete("/proxy/watchlist/{watchlist_id}")
 async def watchlist_delete(watchlist_id: str):
