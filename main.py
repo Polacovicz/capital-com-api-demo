@@ -22,8 +22,7 @@ class SessionRequest(BaseModel):
 class SwitchAccountRequest(BaseModel):
     accountId: str
 
-# 🔹 Models de Posições, Ordens e Watchlists (idem previamente definidos)…
-
+# 🔹 Models de Posições, Ordens e Watchlists
 class CreatePositionRequest(BaseModel):
     epic: str
     direction: str
@@ -81,9 +80,6 @@ class CreateWatchlistRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=20)
     epics: Optional[List[str]] = None
 
-class AddMarketToWatchlistRequest(BaseModel):
-    epic: str
-
 # 🔹 Utilitários de Sessão
 async def login():
     global SESSION_TOKEN, SECURITY_TOKEN
@@ -103,7 +99,7 @@ async def ensure_session():
     if SESSION_TOKEN is None:
         await login()
 
-async def make_request(method: str, endpoint: str, data=None, params=None):
+async def make_request(method: str, endpoint: str, data: Any = None, params: Dict[str,Any] = None):
     await ensure_session()
     headers = {
         "X-CAP-API-KEY": API_KEY,
@@ -147,7 +143,7 @@ async def session_create(req: SessionRequest):
 
 @app.put("/proxy/session")
 async def session_switch(req: SwitchAccountRequest):
-    return await make_request("PUT", "/session", req.dict())
+    return await make_request("PUT", "/session", data=req.dict())
 
 @app.delete("/proxy/session")
 async def session_logout():
@@ -166,12 +162,29 @@ async def account_prefs():
     return await make_request("GET", "/accounts/preferences")
 
 @app.put("/proxy/account/preferences")
-async def update_account_prefs(payload: Dict[str, Any] = Body(...)):
+async def update_account_prefs(
+    payload: Dict[str, Any] = Body(...)
+):
     """
     Atualiza alavancagem e/ou hedging.
-    Recebe qualquer JSON com keys 'leverages' e/ou 'hedgingMode'.
+    Aceita somente JSON no corpo com 'leverages' e/ou 'hedgingMode'.
     """
-    return await make_request("PUT", "/accounts/preferences", data=payload)
+    leverages = payload.get("leverages")
+    hedging_mode = payload.get("hedgingMode")
+
+    if leverages is None and hedging_mode is None:
+        raise HTTPException(
+            status_code=400,
+            detail="É necessário informar 'leverages' e/ou 'hedgingMode'."
+        )
+
+    body: Dict[str, Any] = {}
+    if leverages is not None:
+        body["leverages"] = leverages
+    if hedging_mode is not None:
+        body["hedgingMode"] = hedging_mode
+
+    return await make_request("PUT", "/accounts/preferences", data=body)
 
 # 🔹 Histórico
 @app.get("/proxy/history/activity")
@@ -194,10 +207,10 @@ async def history_transactions(
     from_date: Optional[str] = Query(None, alias="from"),
     to_date: Optional[str] = Query(None, alias="to"),
     last_period: Optional[int] = Query(None, alias="lastPeriod"),
-    type: Optional[str] = None
+    tx_type: Optional[str] = Query(None, alias="type")
 ):
     params = {k: v for k, v in {
-        "from": from_date, "to": to_date, "lastPeriod": last_period, "type": type
+        "from": from_date, "to": to_date, "lastPeriod": last_period, "type": tx_type
     }.items() if v is not None}
     return await make_request("GET", "/history/transactions", params=params)
 
@@ -213,7 +226,7 @@ async def positions_open():
 
 @app.post("/proxy/position")
 async def position_create(req: CreatePositionRequest):
-    return await make_request("POST", "/positions", req.dict())
+    return await make_request("POST", "/positions", data=req.dict())
 
 @app.get("/proxy/position/{deal_id}")
 async def position_get(deal_id: str):
@@ -221,7 +234,7 @@ async def position_get(deal_id: str):
 
 @app.put("/proxy/position/{deal_id}")
 async def position_update(deal_id: str, req: UpdatePositionRequest):
-    return await make_request("PUT", f"/positions/{deal_id}", req.dict(exclude_none=True))
+    return await make_request("PUT", f"/positions/{deal_id}", data=req.dict(exclude_none=True))
 
 @app.delete("/proxy/position/{deal_id}")
 async def position_close(deal_id: str):
@@ -234,11 +247,11 @@ async def orders_open():
 
 @app.post("/proxy/order")
 async def order_create(req: CreateWorkingOrderRequest):
-    return await make_request("POST", "/workingorders", req.dict())
+    return await make_request("POST", "/workingorders", data=req.dict())
 
 @app.put("/proxy/order/{deal_id}")
 async def order_update(deal_id: str, req: UpdateWorkingOrderRequest):
-    return await make_request("PUT", f"/workingorders/{deal_id}", req.dict(exclude_none=True))
+    return await make_request("PUT", f"/workingorders/{deal_id}", data=req.dict(exclude_none=True))
 
 @app.delete("/proxy/order/{deal_id}")
 async def order_delete(deal_id: str):
@@ -250,7 +263,9 @@ async def markets_list(
     searchTerm: Optional[str] = Query(None),
     epics: Optional[str] = Query(None)
 ):
-    params = {"searchTerm": searchTerm} if searchTerm else {"epics": epics} if epics else {}
+    params: Dict[str,Any] = {}
+    if searchTerm: params["searchTerm"] = searchTerm
+    if epics:      params["epics"]      = epics
     return await make_request("GET", "/markets", params=params)
 
 @app.get("/proxy/markets/navigation")
@@ -277,7 +292,7 @@ async def prices_historical(
     from_date: Optional[str] = Query(None, alias="from"),
     to_date: Optional[str] = Query(None, alias="to")
 ):
-    params = {"resolution": resolution, "max_entries": max_entries}
+    params: Dict[str,Any] = {"resolution": resolution, "max_entries": max_entries}
     if from_date: params["from"] = from_date
     if to_date:   params["to"]   = to_date
     return await make_request("GET", f"/prices/{epic}", params=params)
@@ -294,7 +309,7 @@ async def watchlists_all():
 
 @app.post("/proxy/watchlist")
 async def watchlist_create(req: CreateWatchlistRequest):
-    return await make_request("POST", "/watchlists", req.dict())
+    return await make_request("POST", "/watchlists", data=req.dict())
 
 @app.get("/proxy/watchlist/{watchlist_id}")
 async def watchlist_get(watchlist_id: str):
