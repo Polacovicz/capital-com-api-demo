@@ -1,51 +1,29 @@
-"""
-Capital.com API Proxy – Hardened 1.2 (hard‑coded credentials)
-Autor: Júlio / ChatGPT
-Data: 2025‑05‑16
-
-⚠️  As credenciais estão hard‑coded conforme solicitado.
-     Proteja este arquivo e o repositório privado.
-"""
-from __future__ import annotations
-
-import time, asyncio
-from typing import Optional, List, Dict, Any
-
-import httpx
-from fastapi import FastAPI, HTTPException, Body, Query, status
+from fastapi import FastAPI, Body, Query, Path, HTTPException
+import httpx, asyncio
 from pydantic import BaseModel, Field
+from typing import Optional, List, Dict, Any, Union
+from enum import Enum
+from datetime import datetime
 
-###############################################################################
-# Credenciais e Configuração (HARD‑CODED)
-###############################################################################
-API_KEY      = "Xkd7V5X79oXWjBjn"
-API_EMAIL    = "juliocesarklamt@outlook.com"
-API_PASSWORD = "99156617aA**"
-BASE_URL     = "https://demo-api-capital.backend-capital.com/api/v1"
-TIMEOUT_S    = 10
-RATE_LIMIT   = 25  # demo: 30 req/min
+app = FastAPI(title="Capital.com API Proxy")
 
-###############################################################################
-# Tokens & controle de sessão
-###############################################################################
-SESSION_TOKEN: Optional[str] = None
-SECURITY_TOKEN: Optional[str] = None
-TOKEN_EXPIRES_AT: float = 0
-_sema = asyncio.Semaphore(RATE_LIMIT)
+# 🔹 Credenciais da API da Capital.com
+API_KEY = "Xkd7V5X79oXWjBjn"  # Substitua pela sua chave da API
+API_EMAIL = "juliocesarklamt@outlook.com"  # Substitua pelo e-mail da API
+API_PASSWORD = "99156617aA**"  # Substitua pela senha da API
+BASE_URL = "https://demo-api-capital.backend-capital.com/api/v1"
 
-###############################################################################
-# Modelos Pydantic – principais
-###############################################################################
-class SwitchAccountRequest(BaseModel):
-    accountId: str
+# 🔹 Tokens de sessão
+SESSION_TOKEN = None
+SECURITY_TOKEN = None
 
+# 🔹 Modelos de dados
 class CreatePositionRequest(BaseModel):
     epic: str
-    direction: str
+    direction: str  # "BUY" ou "SELL"
     size: float
-    leverage: float
-    guaranteedStop: bool = False
-    trailingStop: bool = False
+    guaranteedStop: Optional[bool] = False
+    trailingStop: Optional[bool] = False
     stopLevel: Optional[float] = None
     stopDistance: Optional[float] = None
     stopAmount: Optional[float] = None
@@ -53,21 +31,25 @@ class CreatePositionRequest(BaseModel):
     profitDistance: Optional[float] = None
     profitAmount: Optional[float] = None
 
-class UpdatePositionRequest(CreatePositionRequest):
-    epic: Optional[str] = None
-    direction: Optional[str] = None
-    size: Optional[float] = None
-    leverage: Optional[float] = None
+class UpdatePositionRequest(BaseModel):
+    guaranteedStop: Optional[bool] = None
+    trailingStop: Optional[bool] = None
+    stopLevel: Optional[float] = None
+    stopDistance: Optional[float] = None
+    stopAmount: Optional[float] = None
+    profitLevel: Optional[float] = None
+    profitDistance: Optional[float] = None
+    profitAmount: Optional[float] = None
 
 class CreateWorkingOrderRequest(BaseModel):
-    direction: str
+    direction: str  # "BUY" ou "SELL"
     epic: str
     size: float
     level: float
-    type: str
+    type: str  # "LIMIT" ou "STOP"
     goodTillDate: Optional[str] = None
-    guaranteedStop: bool = False
-    trailingStop: bool = False
+    guaranteedStop: Optional[bool] = False
+    trailingStop: Optional[bool] = False
     stopLevel: Optional[float] = None
     stopDistance: Optional[float] = None
     stopAmount: Optional[float] = None
@@ -75,142 +57,368 @@ class CreateWorkingOrderRequest(BaseModel):
     profitDistance: Optional[float] = None
     profitAmount: Optional[float] = None
 
-class UpdateWorkingOrderRequest(CreateWorkingOrderRequest):
-    direction: Optional[str] = None
-    size: Optional[float] = None
+class UpdateWorkingOrderRequest(BaseModel):
     level: Optional[float] = None
-    type: Optional[str] = None
+    goodTillDate: Optional[str] = None
+    guaranteedStop: Optional[bool] = None
+    trailingStop: Optional[bool] = None
+    stopLevel: Optional[float] = None
+    stopDistance: Optional[float] = None
+    stopAmount: Optional[float] = None
+    profitLevel: Optional[float] = None
+    profitDistance: Optional[float] = None
+    profitAmount: Optional[float] = None
+
+class UpdateAccountPreferencesRequest(BaseModel):
+    leverages: Optional[Dict[str, int]] = None
+    hedgingMode: Optional[bool] = None
 
 class CreateWatchlistRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=20)
     epics: Optional[List[str]] = None
 
-###############################################################################
-# Funções auxiliares
-###############################################################################
+class AddMarketToWatchlistRequest(BaseModel):
+    epic: str
 
-def _auth_headers() -> Dict[str, str]:
-    return {
+class SessionRequest(BaseModel):
+    identifier: str
+    password: str
+    encryptedPassword: Optional[bool] = False
+
+class SwitchAccountRequest(BaseModel):
+    accountId: str
+
+# 🔹 Funções de utilidade
+async def login():
+    """Autentica na API da Capital.com e armazena os tokens de sessão."""
+    global SESSION_TOKEN, SECURITY_TOKEN
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{BASE_URL}/session",
+            json={"identifier": API_EMAIL, "password": API_PASSWORD},
+            headers={"X-CAP-API-KEY": API_KEY},
+        )
+        if response.status_code == 200:
+            SESSION_TOKEN = response.headers.get("CST")
+            SECURITY_TOKEN = response.headers.get("X-SECURITY-TOKEN")
+            print("🔄 Token de sessão atualizado:", SESSION_TOKEN)
+        else:
+            print("⚠️ Erro ao fazer login:", response.text)
+
+async def ensure_valid_session():
+    if SESSION_TOKEN is None:
+        print("⚠️ Token ausente! Fazendo login novamente...")
+        await login()
+
+async def keep_session_alive():
+    while True:
+        await login()
+        await asyncio.sleep(8 * 60)  # Renova a cada 8 minutos
+
+async def make_request(method: str, endpoint: str, data=None, params=None):
+    await ensure_valid_session()
+    url = f"{BASE_URL}{endpoint}"
+    headers = {
         "X-CAP-API-KEY": API_KEY,
         "CST": SESSION_TOKEN or "",
         "X-SECURITY-TOKEN": SECURITY_TOKEN or "",
     }
+    print(f"📌 Enviando requisição: {method} {url}")
+    print(f"📌 Headers: {headers}")
+    print(f"📌 Dados: {data}")
+    print(f"📌 Parâmetros: {params}")
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.request(method, url, json=data, params=params, headers=headers)
+        print(f"📌 Resposta: {response.status_code} - {response.text}")
+        
+        if response.status_code >= 400:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+            
+        return response.json() if response.text else {"status": "success"}
 
-async def _login() -> None:
-    """Autentica e armazena tokens/expiração (15 min)"""
-    global SESSION_TOKEN, SECURITY_TOKEN, TOKEN_EXPIRES_AT
-    async with httpx.AsyncClient(timeout=TIMEOUT_S) as c:
-        r = await c.post(f"{BASE_URL}/session", json={"identifier": API_EMAIL, "password": API_PASSWORD}, headers={"X-CAP-API-KEY": API_KEY})
-    if r.status_code != 200:
-        raise HTTPException(r.status_code, f"Falha login: {r.text}")
-    SESSION_TOKEN   = r.headers.get("CST")
-    SECURITY_TOKEN  = r.headers.get("X-SECURITY-TOKEN")
-    TOKEN_EXPIRES_AT = time.time() + 14 * 60   # buffer
-
-async def _ensure_session() -> None:
-    if not SESSION_TOKEN or time.time() >= TOKEN_EXPIRES_AT:
-        await _login()
-
-async def _request(method: str, endpoint: str, *, json: Any = None, params: Dict[str, Any] | None = None, retry: bool = True):
-    await _ensure_session()
-    async with _sema:
-        async with httpx.AsyncClient(timeout=TIMEOUT_S, headers=_auth_headers()) as c:
-            r = await c.request(method, f"{BASE_URL}{endpoint}", json=json, params=params)
-    if r.status_code == 401 and retry:
-        await _login()
-        return await _request(method, endpoint, json=json, params=params, retry=False)
-    if r.status_code >= 400:
-        raise HTTPException(r.status_code, r.text)
-    return r.json() if r.text else {}
-
-###############################################################################
-# FastAPI App
-###############################################################################
-app = FastAPI(title="Capital.com API Proxy – Hardened (Hard‑coded)")
-
+# 🔹 Inicialização
 @app.on_event("startup")
-async def _startup():
-    await _login()
+async def startup_event():
+    asyncio.create_task(keep_session_alive())
 
-# Sessão
-@app.post("/proxy/login")
-async def proxy_login():
-    await _login()
-    return {"message": "Sessão renovada"}
+# 🔹 Endpoints Gerais
+@app.get("/proxy/time")
+async def get_server_time():
+    """Retorna o horário do servidor da API."""
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{BASE_URL}/time")
+        return response.json()
 
 @app.get("/proxy/ping")
-async def ping():
-    return await _request("GET", "/ping")
+async def ping_service():
+    """Mantém a sessão viva."""
+    return await make_request("GET", "/ping")
+
+# 🔹 Endpoints de Sessão
+@app.post("/proxy/login")
+async def proxy_login():
+    await login()
+    return {"message": "Sessão renovada", "session": SESSION_TOKEN}
+
+@app.get("/proxy/session/encryption-key")
+async def get_encryption_key():
+    """Obtém a chave de criptografia para autenticação segura."""
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{BASE_URL}/session/encryptionKey",
+            headers={"X-CAP-API-KEY": API_KEY}
+        )
+        return response.json()
 
 @app.get("/proxy/session")
-async def session_details():
-    return await _request("GET", "/session")
+async def get_session_details():
+    """Retorna os detalhes da sessão atual."""
+    return await make_request("GET", "/session")
+
+@app.post("/proxy/session/create")
+async def create_session(request: SessionRequest):
+    """Cria uma nova sessão com a API."""
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{BASE_URL}/session",
+            json=request.dict(),
+            headers={"X-CAP-API-KEY": API_KEY}
+        )
+        if response.status_code == 200:
+            global SESSION_TOKEN, SECURITY_TOKEN
+            SESSION_TOKEN = response.headers.get("CST")
+            SECURITY_TOKEN = response.headers.get("X-SECURITY-TOKEN")
+            return response.json()
+        else:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
 
 @app.put("/proxy/session")
-async def session_switch(req: SwitchAccountRequest):
-    return await _request("PUT", "/session", json=req.dict())
+async def switch_active_account(request: SwitchAccountRequest):
+    """Altera a conta ativa para operações."""
+    return await make_request("PUT", "/session", request.dict())
 
 @app.delete("/proxy/session")
-async def session_logout():
-    await _request("DELETE", "/session")
-    globals().update(SESSION_TOKEN=None, SECURITY_TOKEN=None, TOKEN_EXPIRES_AT=0)
-    return {"message": "Sessão encerrada"}
+async def logout():
+    """Encerra a sessão atual."""
+    response = await make_request("DELETE", "/session")
+    global SESSION_TOKEN, SECURITY_TOKEN
+    SESSION_TOKEN = None
+    SECURITY_TOKEN = None
+    return response
 
-# Conta
+# 🔹 Endpoints de Contas
 @app.get("/proxy/account")
-async def account_list():
-    return await _request("GET", "/accounts")
+async def get_account_details():
+    """Retorna os detalhes de todas as contas do usuário."""
+    return await make_request("GET", "/accounts")
 
 @app.get("/proxy/account/preferences")
-async def account_prefs():
-    return await _request("GET", "/accounts/preferences")
+async def get_account_preferences():
+    """Retorna as preferências da conta atual."""
+    return await make_request("GET", "/accounts/preferences")
 
 @app.put("/proxy/account/preferences")
-async def update_account_prefs(payload: Dict[str, Any] = Body(...)):
-    body = {k: v for k, v in payload.items() if k in {"leverages", "hedgingMode"}}
-    if not body:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Informe 'leverages' e/ou 'hedgingMode'.")
-    return await _request("PUT", "/accounts/preferences", json=body)
+async def update_account_preferences(preferences: UpdateAccountPreferencesRequest):
+    """Atualiza as preferências da conta atual."""
+    return await make_request("PUT", "/accounts/preferences", preferences.dict())
 
-# Posições
+@app.get("/proxy/history/activity")
+async def get_account_activity(
+    from_date: Optional[str] = Query(None, alias="from"),
+    to_date: Optional[str] = Query(None, alias="to"),
+    last_period: Optional[int] = Query(None, alias="lastPeriod"),
+    detailed: Optional[bool] = Query(False),
+    deal_id: Optional[str] = Query(None, alias="dealId"),
+    filter_str: Optional[str] = Query(None, alias="filter")
+):
+    """Retorna o histórico de atividades da conta."""
+    params = {}
+    if from_date:
+        params["from"] = from_date
+    if to_date:
+        params["to"] = to_date
+    if last_period:
+        params["lastPeriod"] = last_period
+    if detailed:
+        params["detailed"] = detailed
+    if deal_id:
+        params["dealId"] = deal_id
+    if filter_str:
+        params["filter"] = filter_str
+        
+    return await make_request("GET", "/history/activity", params=params)
+
+@app.get("/proxy/history/transactions")
+async def get_account_transactions(
+    from_date: Optional[str] = Query(None, alias="from"),
+    to_date: Optional[str] = Query(None, alias="to"),
+    last_period: Optional[int] = Query(None, alias="lastPeriod"),
+    type: Optional[str] = None
+):
+    """Retorna o histórico de transações da conta."""
+    params = {}
+    if from_date:
+        params["from"] = from_date
+    if to_date:
+        params["to"] = to_date
+    if last_period:
+        params["lastPeriod"] = last_period
+    if type:
+        params["type"] = type
+        
+    return await make_request("GET", "/history/transactions", params=params)
+
+@app.post("/proxy/account/topup")
+async def adjust_demo_balance(amount: float = Body(..., embed=True)):
+    """Ajusta o saldo da conta demo."""
+    return await make_request("POST", "/accounts/topUp", {"amount": amount})
+
+# 🔹 Endpoints de Confirmação
+@app.get("/proxy/confirms/{deal_reference}")
+async def get_position_confirmation(deal_reference: str):
+    """Retorna a confirmação de uma negociação pelo seu ID de referência."""
+    return await make_request("GET", f"/confirms/{deal_reference}")
+
+# 🔹 Endpoints de Posições
 @app.get("/proxy/positions")
-async def positions_open():
-    return await _request("GET", "/positions")
+async def get_open_positions():
+    """Retorna todas as posições abertas da conta ativa."""
+    return await make_request("GET", "/positions")
 
 @app.post("/proxy/position")
-async def position_create(req: CreatePositionRequest):
-    return await _request("POST", "/positions", json=req.dict())
+async def create_position(position: CreatePositionRequest = Body(...)):
+    """Abre uma nova posição utilizando o endpoint /positions."""
+    print("📌 Enviando posição com dados:", position.dict())
+    return await make_request("POST", "/positions", position.dict())
+
+@app.get("/proxy/position/{deal_id}")
+async def get_position(deal_id: str):
+    """Retorna os detalhes de uma posição específica."""
+    return await make_request("GET", f"/positions/{deal_id}")
 
 @app.put("/proxy/position/{deal_id}")
-async def position_update(deal_id: str, req: UpdatePositionRequest):
-    return await _request("PUT", f"/positions/{deal_id}", json=req.dict(exclude_none=True))
+async def update_position(deal_id: str, update_data: UpdatePositionRequest):
+    """Atualiza uma posição existente."""
+    return await make_request("PUT", f"/positions/{deal_id}", update_data.dict())
 
 @app.delete("/proxy/position/{deal_id}")
-async def position_close(deal_id: str):
-    return await _request("DELETE", f"/positions/{deal_id}")
+async def close_position(deal_id: str):
+    """Fecha uma posição aberta."""
+    return await make_request("DELETE", f"/positions/{deal_id}")
 
-# Ordens
+# 🔹 Endpoints de Ordens
 @app.get("/proxy/orders")
-async def orders_open():
-    return await _request("GET", "/workingorders")
+async def get_working_orders():
+    """Retorna todas as ordens pendentes da conta ativa."""
+    return await make_request("GET", "/workingorders")
 
 @app.post("/proxy/order")
-async def order_create(req: CreateWorkingOrderRequest):
-    return await _request("POST", "/workingorders", json=req.dict())
+async def create_working_order(order: CreateWorkingOrderRequest):
+    """Cria uma nova ordem pendente."""
+    return await make_request("POST", "/workingorders", order.dict())
 
 @app.put("/proxy/order/{deal_id}")
-async def order_update(deal_id: str, req: UpdateWorkingOrderRequest):
-    return await _request("PUT", f"/workingorders/{deal_id}", json=req.dict(exclude_none=True))
+async def update_working_order(deal_id: str, update_data: UpdateWorkingOrderRequest):
+    """Atualiza uma ordem pendente existente."""
+    return await make_request("PUT", f"/workingorders/{deal_id}", update_data.dict())
 
 @app.delete("/proxy/order/{deal_id}")
-async def order_delete(deal_id: str):
-    return await _request("DELETE", f"/workingorders/{deal_id}")
+async def delete_working_order(deal_id: str):
+    """Remove uma ordem pendente."""
+    return await make_request("DELETE", f"/workingorders/{deal_id}")
 
-# Mercados
+# 🔹 Endpoints de Mercados
+@app.get("/proxy/markets/navigation")
+async def get_market_categories():
+    """Retorna todas as categorias de mercado de alto nível."""
+    return await make_request("GET", "/marketnavigation")
+
+@app.get("/proxy/markets/navigation/{node_id}")
+async def get_market_category_subnodes(
+    node_id: str, 
+    limit: Optional[int] = Query(500, le=500)
+):
+    """Retorna todos os sub-nós de uma categoria de mercado."""
+    params = {"limit": limit}
+    return await make_request("GET", f"/marketnavigation/{node_id}", params=params)
+
 @app.get("/proxy/markets")
-async def markets_list(searchTerm: Optional[str] = None, epics: Optional[str] = None):
-    return await _request("GET", "/markets", params={k: v for k, v in {"searchTerm": searchTerm, "epics": epics}.items() if v})
+async def get_markets_details(
+    search_term: Optional[str] = Query(None, alias="searchTerm"),
+    epics: Optional[str] = Query(None)
+):
+    """Retorna os detalhes de múltiplos mercados."""
+    params = {}
+    if search_term:
+        params["searchTerm"] = search_term
+    elif epics:
+        params["epics"] = epics
+        
+    return await make_request("GET", "/markets", params=params)
 
 @app.get("/proxy/market/{epic}")
-async def market_get(epic: str):
-    return
+async def get_market_details(epic: str):
+    """Retorna os detalhes de um mercado específico."""
+    return await make_request("GET", f"/markets/{epic}")
+
+# 🔹 Endpoints de Preços
+@app.get("/proxy/prices/{epic}")
+async def get_historical_prices(
+    epic: str, 
+    resolution: Optional[str] = Query("MINUTE"),
+    max_entries: Optional[int] = Query(10, alias="max", le=1000),
+    from_date: Optional[str] = Query(None, alias="from"),
+    to_date: Optional[str] = Query(None, alias="to")
+):
+    """Retorna os preços históricos de um instrumento."""
+    params = {"resolution": resolution, "max": max_entries}
+    if from_date:
+        params["from"] = from_date
+    if to_date:
+        params["to"] = to_date
+        
+    return await make_request("GET", f"/prices/{epic}", params=params)
+
+# 🔹 Endpoints de Sentimento do Cliente
+@app.get("/proxy/sentiment")
+async def get_client_sentiment_multiple(market_ids: str = Query(..., alias="marketIds")):
+    """Retorna o sentimento do cliente para múltiplos mercados."""
+    params = {"marketIds": market_ids}
+    return await make_request("GET", "/clientsentiment", params=params)
+
+@app.get("/proxy/sentiment/{market_id}")
+async def get_client_sentiment(market_id: str):
+    """Retorna o sentimento do cliente para um mercado específico."""
+    return await make_request("GET", f"/clientsentiment/{market_id}")
+
+# 🔹 Endpoints de Listas de Observação
+@app.get("/proxy/watchlists")
+async def get_all_watchlists():
+    """Retorna todas as listas de observação do usuário."""
+    return await make_request("GET", "/watchlists")
+
+@app.post("/proxy/watchlist")
+async def create_watchlist(watchlist: CreateWatchlistRequest):
+    """Cria uma nova lista de observação."""
+    return await make_request("POST", "/watchlists", watchlist.dict())
+
+@app.get("/proxy/watchlist/{watchlist_id}")
+async def get_watchlist(watchlist_id: str):
+    """Retorna os detalhes de uma lista de observação específica."""
+    return await make_request("GET", f"/watchlists/{watchlist_id}")
+
+@app.put("/proxy/watchlist/{watchlist_id}")
+async def add_market_to_watchlist(watchlist_id: str, market: AddMarketToWatchlistRequest):
+    """Adiciona um mercado a uma lista de observação."""
+    return await make_request("PUT", f"/watchlists/{watchlist_id}", market.dict())
+
+@app.delete("/proxy/watchlist/{watchlist_id}")
+async def delete_watchlist(watchlist_id: str):
+    """Remove uma lista de observação."""
+    return await make_request("DELETE", f"/watchlists/{watchlist_id}")
+
+@app.delete("/proxy/watchlist/{watchlist_id}/{epic}")
+async def remove_market_from_watchlist(watchlist_id: str, epic: str):
+    """Remove um mercado de uma lista de observação."""
+    return await make_request("DELETE", f"/watchlists/{watchlist_id}/{epic}")
